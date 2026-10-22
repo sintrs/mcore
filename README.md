@@ -1,4 +1,4 @@
-# mihomo
+
 A simple python pydantic model (type hint and autocompletion support) for Honkai: Star Rail parsed data from the Mihomo API.
 
 API url: https://api.mihomo.me/sr_info_parsed/{UID}?lang={LANG}
