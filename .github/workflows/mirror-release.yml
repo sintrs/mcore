@@ -1,7 +1,7 @@
 name: Mirror Release
 
-# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,转发到本仓库的 Release。
-# 不用编译,产物与上游完全一致(本仓库 Alpha 与上游 HEAD 同 commit)。
+# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,改名成 mcore-* 后转发到本仓库 Release。
+# 不编译、不写发布说明(正文留空),产物与上游字节级一致。
 
 on:
   schedule:
@@ -14,7 +14,7 @@ on:
         required: false
         default: ""
       force:
-        description: "资产已存在也重新上传"
+        description: "已有同名资产也重新上传"
         type: boolean
         default: false
 
@@ -28,6 +28,9 @@ concurrency:
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   SOURCE_REPO: MetaCubeX/mihomo
+  # 上游文件名前缀 mihomo-,本仓库发布时换成 mcore-
+  FILE_PREFIX: mcore
+  TITLE_PREFIX: mcore
 
 jobs:
   mirror:
@@ -46,75 +49,88 @@ jobs:
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "上游最新版本: $TAG"
+          echo "上游版本: $TAG"
 
-      - name: 已完整镜像则跳过
+      - name: 检查是否已同步
         id: chk
         run: |
           set -euo pipefail
           TAG="${{ steps.up.outputs.tag }}"
-          HAVE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-                   --json assets --jq '.assets[].name' 2>/dev/null || true)
           SKIP=false
-          if [ "${{ inputs.force }}" != "true" ] && [ -n "$HAVE" ]; then
+          if [ "${{ inputs.force }}" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            HAVE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            BODY=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body')
             SKIP=true
-            for f in "mihomo-linux-amd64-v3-${TAG}.deb" "mihomo-windows-amd64-v3-${TAG}.zip"; do
-              echo "$HAVE" | grep -qx "$f" || SKIP=false
+            # 资产必须正好是改名后的两个,且正文为空
+            COUNT=$(printf '%s\n' "$HAVE" | grep -c . || true)
+            [ "$COUNT" -eq 2 ] || SKIP=false
+            for f in "${FILE_PREFIX}-linux-amd64-v3-${TAG}.deb" "${FILE_PREFIX}-windows-amd64-v3-${TAG}.zip"; do
+              printf '%s\n' "$HAVE" | grep -qx "$f" || SKIP=false
             done
+            [ -z "$BODY" ] || SKIP=false
           fi
           echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
           if [ "$SKIP" = "true" ]; then
-            echo "两个资产都已存在,跳过上传"
+            echo "已是 2 个 mcore-* 资产且正文为空,跳过"
           fi
 
-      - name: 下载上游资产
+      - name: 下载并改名
         if: steps.chk.outputs.skip != 'true'
         run: |
           set -euo pipefail
           TAG="${{ steps.up.outputs.tag }}"
           mkdir -p dist
-          # 用精确文件名,避免误抓 -go120/-go123 等旧 Go 变体
+          # 精确文件名,避免误抓 -go120/-go123 等旧 Go 变体
           gh release download "$TAG" --repo "$SOURCE_REPO" --dir dist \
             --pattern "mihomo-linux-amd64-v3-${TAG}.deb" \
             --pattern "mihomo-windows-amd64-v3-${TAG}.zip"
-          ls -lh dist
-
-      - name: 生成 sha256
-        if: steps.chk.outputs.skip != 'true'
-        run: |
-          set -euo pipefail
           cd dist
-          sha256sum mihomo-*.deb mihomo-*.zip | tee checksums.txt
+          for f in mihomo-*; do
+            mv -v "$f" "${FILE_PREFIX}-${f#mihomo-}"
+          done
+          ls -lh
 
-      - name: 创建或更新 Release
+      - name: 同步 Release(标题与文件名改 mcore,正文留空)
         if: steps.chk.outputs.skip != 'true'
         run: |
           set -euo pipefail
           TAG="${{ steps.up.outputs.tag }}"
-          cat > "$RUNNER_TEMP/notes.md" <<EOF
-          同步自 [${SOURCE_REPO}](https://github.com/${SOURCE_REPO}/releases/tag/${TAG}),仅镜像 amd64-v3 两个包:
+          TITLE="${TITLE_PREFIX} ${TAG}"
+          WANT_DEB="${FILE_PREFIX}-linux-amd64-v3-${TAG}.deb"
+          WANT_ZIP="${FILE_PREFIX}-windows-amd64-v3-${TAG}.zip"
 
-          - mihomo-linux-amd64-v3-${TAG}.deb(Debian/Ubuntu 安装包,含 systemd 单元)
-          - mihomo-windows-amd64-v3-${TAG}.zip
-
-          构建参数与上游发布一致(go1.26, with_gvisor, 静态链接),校验和见 checksums.txt。
-
-          安装:
-
-              sudo dpkg -i mihomo-linux-amd64-v3-${TAG}.deb
-          EOF
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release 已存在,覆盖上传"
-            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
-          else
+          RID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.id' 2>/dev/null || true)
+          if [ -z "$RID" ]; then
             echo "创建 Release $TAG"
-            # --target 指向默认分支当前提交:tag 落在 main 上就不会触发
-            # Alpha 分支 build.yml 的 push.tags(v*) 构建
-            gh release create "$TAG" dist/* \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "${{ github.sha }}" \
-              --title "mihomo ${TAG}" \
-              --notes-file "$RUNNER_TEMP/notes.md"
+            # 用 API 直接建,便于把 body 显式置空(gh release create 的空正文行为不直观)
+            RID=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+                    -f tag_name="$TAG" \
+                    -f target_commitish="${{ github.sha }}" \
+                    -f name="$TITLE" \
+                    -f body="" \
+                    --jq '.id')
+          else
+            echo "Release 已存在(id=$RID),就地更新"
           fi
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[] | "\(.name)  \(.size) bytes"'
+
+          # 清掉不该存在的资产:旧命名的 mihomo-*、checksums.txt 等
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RID/assets" \
+            --jq '.[] | "\(.id)\t\(.name)"' > "$RUNNER_TEMP/assets.tsv"
+          while IFS=$'\t' read -r aid aname; do
+            [ -n "${aid:-}" ] || continue
+            case "$aname" in
+              "$WANT_DEB"|"$WANT_ZIP") continue ;;
+            esac
+            echo "删除多余资产: $aname"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$aid" >/dev/null
+          done < "$RUNNER_TEMP/assets.tsv"
+
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+          # 标题与正文兜底:正文强制为空
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RID" \
+            -f name="$TITLE" -f body="" >/dev/null
+
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json name,body,assets \
+            --jq '{name, body, assets: [.assets[] | {name, size}]}'
