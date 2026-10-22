@@ -1,0 +1,120 @@
+name: Mirror Release
+
+# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,转发到本仓库的 Release。
+# 不用编译,产物与上游完全一致(本仓库 Alpha 与上游 HEAD 同 commit)。
+
+on:
+  schedule:
+    # 每 6 小时一次,避开整点
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "指定版本(如 v1.19.33),留空则取上游 latest"
+        required: false
+        default: ""
+      force:
+        description: "资产已存在也重新上传"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-release
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  SOURCE_REPO: MetaCubeX/mihomo
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 解析上游版本
+        id: up
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api "repos/${SOURCE_REPO}/releases/latest" --jq '.tag_name')
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::取不到上游版本号"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "上游最新版本: $TAG"
+
+      - name: 已完整镜像则跳过
+        id: chk
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.up.outputs.tag }}"
+          HAVE=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+                   --json assets --jq '.assets[].name' 2>/dev/null || true)
+          SKIP=false
+          if [ "${{ inputs.force }}" != "true" ] && [ -n "$HAVE" ]; then
+            SKIP=true
+            for f in "mihomo-linux-amd64-v3-${TAG}.deb" "mihomo-windows-amd64-v3-${TAG}.zip"; do
+              echo "$HAVE" | grep -qx "$f" || SKIP=false
+            done
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+          if [ "$SKIP" = "true" ]; then
+            echo "两个资产都已存在,跳过上传"
+          fi
+
+      - name: 下载上游资产
+        if: steps.chk.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.up.outputs.tag }}"
+          mkdir -p dist
+          # 用精确文件名,避免误抓 -go120/-go123 等旧 Go 变体
+          gh release download "$TAG" --repo "$SOURCE_REPO" --dir dist \
+            --pattern "mihomo-linux-amd64-v3-${TAG}.deb" \
+            --pattern "mihomo-windows-amd64-v3-${TAG}.zip"
+          ls -lh dist
+
+      - name: 生成 sha256
+        if: steps.chk.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum mihomo-*.deb mihomo-*.zip | tee checksums.txt
+
+      - name: 创建或更新 Release
+        if: steps.chk.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.up.outputs.tag }}"
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          同步自 [${SOURCE_REPO}](https://github.com/${SOURCE_REPO}/releases/tag/${TAG}),仅镜像 amd64-v3 两个包:
+
+          - mihomo-linux-amd64-v3-${TAG}.deb(Debian/Ubuntu 安装包,含 systemd 单元)
+          - mihomo-windows-amd64-v3-${TAG}.zip
+
+          构建参数与上游发布一致(go1.26, with_gvisor, 静态链接),校验和见 checksums.txt。
+
+          安装:
+
+              sudo dpkg -i mihomo-linux-amd64-v3-${TAG}.deb
+          EOF
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release 已存在,覆盖上传"
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "创建 Release $TAG"
+            # --target 指向默认分支当前提交:tag 落在 main 上就不会触发
+            # Alpha 分支 build.yml 的 push.tags(v*) 构建
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "${{ github.sha }}" \
+              --title "mihomo ${TAG}" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size) bytes"'
