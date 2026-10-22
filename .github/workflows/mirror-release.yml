@@ -1,9 +1,9 @@
 name: Mirror Release
 
-# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,改名成 mcore-* 后转发到本仓库 Release。
+# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,改名后转发到本仓库 Release。
 # 不编译、不写发布说明(正文留空)。
-#   deb: 只改外层文件名,包内仍是 mihomo(含 /usr/bin/mihomo 与 systemd 单元)。
-#   zip: 重打包,内部的 mihomo-*.exe 也一并改名成 mcore-*.exe;exe 字节不变,zip 字节因此与上游不同。
+#   deb:  mcore-*   只改外层文件名,包内仍是 mihomo(含 /usr/bin/mihomo 与 systemd 单元)。
+#   zip:  micore-*  外层文件名与包内 exe 都改;exe 字节不变,zip 因重打包与上游字节不同。
 
 on:
   schedule:
@@ -30,8 +30,10 @@ concurrency:
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   SOURCE_REPO: MetaCubeX/mihomo
-  # 上游文件名前缀 mihomo-,本仓库发布时换成 mcore-
+  # 上游文件名前缀 mihomo-,本仓库发布时换掉。
+  # deb 用 mcore-,windows zip 的外层文件名与包内 exe 都用 micore-(多一个 i)。
   FILE_PREFIX: mcore
+  WIN_PREFIX: micore
   TITLE_PREFIX: mcore
 
 jobs:
@@ -66,14 +68,14 @@ jobs:
             # 资产必须正好是改名后的两个,且正文为空
             COUNT=$(printf '%s\n' "$HAVE" | grep -c . || true)
             [ "$COUNT" -eq 2 ] || SKIP=false
-            for f in "${FILE_PREFIX}-linux-amd64-v3-${TAG}.deb" "${FILE_PREFIX}-windows-amd64-v3-${TAG}.zip"; do
+            for f in "${FILE_PREFIX}-linux-amd64-v3-${TAG}.deb" "${WIN_PREFIX}-windows-amd64-v3-${TAG}.zip"; do
               printf '%s\n' "$HAVE" | grep -qx "$f" || SKIP=false
             done
             [ -z "$BODY" ] || SKIP=false
           fi
           echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
           if [ "$SKIP" = "true" ]; then
-            echo "已是 2 个 mcore-* 资产且正文为空,跳过"
+            echo "已是 deb(mcore-*) + zip(micore-*) 两个资产且正文为空,跳过"
           fi
 
       - name: 下载并改名
@@ -87,8 +89,12 @@ jobs:
             --pattern "mihomo-linux-amd64-v3-${TAG}.deb" \
             --pattern "mihomo-windows-amd64-v3-${TAG}.zip"
           cd dist
+          # deb 用 mcore-,windows zip 用 micore-
           for f in mihomo-*; do
-            mv -v "$f" "${FILE_PREFIX}-${f#mihomo-}"
+            case "$f" in
+              *.zip) mv -v "$f" "${WIN_PREFIX}-${f#mihomo-}" ;;
+              *)     mv -v "$f" "${FILE_PREFIX}-${f#mihomo-}" ;;
+            esac
           done
           ls -lh
 
@@ -98,7 +104,7 @@ jobs:
           set -euo pipefail
           cd dist
           TAG="${{ steps.up.outputs.tag }}"
-          ZIP="${FILE_PREFIX}-windows-amd64-v3-${TAG}.zip"
+          ZIP="${WIN_PREFIX}-windows-amd64-v3-${TAG}.zip"
           OUT="$PWD/$ZIP"
           WORK="$RUNNER_TEMP/rezip"
           rm -rf "$WORK" && mkdir -p "$WORK"
@@ -109,8 +115,8 @@ jobs:
           n=0
           while IFS= read -r -d '' f; do
             d=$(dirname "$f"); b=$(basename "$f")
-            [ "$b" = "${FILE_PREFIX}-${b#mihomo-}" ] && continue
-            mv -v "$f" "$d/${FILE_PREFIX}-${b#mihomo-}"
+            [ "$b" = "${WIN_PREFIX}-${b#mihomo-}" ] && continue
+            mv -v "$f" "$d/${WIN_PREFIX}-${b#mihomo-}"
             n=$((n + 1))
           done < <(find "$WORK" -type f -name 'mihomo-*' -print0)
           if [ "$n" -eq 0 ]; then
@@ -138,14 +144,14 @@ jobs:
           echo "✓ 重打包校验通过:$(cd "$VERIFY" && sha256sum *)"
           ls -lh "$OUT"
 
-      - name: 同步 Release(标题与文件名改 mcore,正文留空)
+      - name: 同步 Release(deb→mcore-,zip→micore-,正文留空)
         if: steps.chk.outputs.skip != 'true'
         run: |
           set -euo pipefail
           TAG="${{ steps.up.outputs.tag }}"
           TITLE="${TITLE_PREFIX} ${TAG}"
           WANT_DEB="${FILE_PREFIX}-linux-amd64-v3-${TAG}.deb"
-          WANT_ZIP="${FILE_PREFIX}-windows-amd64-v3-${TAG}.zip"
+          WANT_ZIP="${WIN_PREFIX}-windows-amd64-v3-${TAG}.zip"
 
           RID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.id' 2>/dev/null || true)
           if [ -z "$RID" ]; then
