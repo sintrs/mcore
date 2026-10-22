@@ -1,7 +1,9 @@
 name: Mirror Release
 
 # 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,改名成 mcore-* 后转发到本仓库 Release。
-# 不编译、不写发布说明(正文留空),产物与上游字节级一致。
+# 不编译、不写发布说明(正文留空)。
+#   deb: 只改外层文件名,包内仍是 mihomo(含 /usr/bin/mihomo 与 systemd 单元)。
+#   zip: 重打包,内部的 mihomo-*.exe 也一并改名成 mcore-*.exe;exe 字节不变,zip 字节因此与上游不同。
 
 on:
   schedule:
@@ -89,6 +91,41 @@ jobs:
             mv -v "$f" "${FILE_PREFIX}-${f#mihomo-}"
           done
           ls -lh
+
+      - name: 重打包 zip(内部 exe 也改名)
+        if: steps.chk.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          cd dist
+          TAG="${{ steps.up.outputs.tag }}"
+          ZIP="${FILE_PREFIX}-windows-amd64-v3-${TAG}.zip"
+          OUT="$PWD/$ZIP"
+          WORK="$RUNNER_TEMP/rezip"
+          rm -rf "$WORK" && mkdir -p "$WORK"
+
+          unzip -q "$ZIP" -d "$WORK"
+
+          # 把归档内所有 mihomo-* 一并改名(上游 zip 里就一个 mihomo-windows-amd64-v3.exe)
+          n=0
+          while IFS= read -r -d '' f; do
+            d=$(dirname "$f"); b=$(basename "$f")
+            [ "$b" = "${FILE_PREFIX}-${b#mihomo-}" ] && continue
+            mv -v "$f" "$d/${FILE_PREFIX}-${b#mihomo-}"
+            n=$((n + 1))
+          done < <(find "$WORK" -type f -name 'mihomo-*' -print0)
+          if [ "$n" -eq 0 ]; then
+            echo "::error::zip 内没有 mihomo-* 文件,上游包结构可能变了"
+            unzip -l "$OUT"
+            exit 1
+          fi
+
+          # -X 去掉 uid/gid 等 extra 字段;时间戳沿用归档内记录,同输入必然产出同字节
+          rm -f "$OUT"
+          ( cd "$WORK" && shopt -s nullglob && set -- * && zip -q -9 -X -r "$OUT" "$@" )
+
+          echo "=== 新 zip 内容 ==="
+          unzip -l "$OUT"
+          ls -lh "$OUT"
 
       - name: 同步 Release(标题与文件名改 mcore,正文留空)
         if: steps.chk.outputs.skip != 'true'
