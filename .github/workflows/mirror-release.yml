@@ -1,9 +1,9 @@
 name: Mirror Release
 
-# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,改名后转发到本仓库 Release。
+# 从上游 MetaCubeX/mihomo 抓 amd64-v3 的两个包,改名成 mcore-* 后转发到本仓库 Release。
 # 不编译、不写发布说明(正文留空)。
-#   deb:  mcore-*   只改外层文件名,包内仍是 mihomo(含 /usr/bin/mihomo 与 systemd 单元)。
-#   zip:  micore-*  外层文件名与包内 exe 都改;exe 字节不变,zip 因重打包与上游字节不同。
+#   deb: 只改外层文件名,包内仍是 mihomo(含 /usr/bin/mihomo 与 systemd 单元)。
+#   zip: 重打包,内部的 mihomo-*.exe 也一并改名成 mcore-*.exe;exe 字节不变,zip 字节因此与上游不同。
 
 on:
   schedule:
@@ -30,10 +30,9 @@ concurrency:
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   SOURCE_REPO: MetaCubeX/mihomo
-  # 上游文件名前缀 mihomo-,本仓库发布时换掉。
-  # deb 用 mcore-,windows zip 的外层文件名与包内 exe 都用 micore-(多一个 i)。
+  # 上游文件名前缀 mihomo-,本仓库发布时统一换成 mcore-(外层文件名与 zip 内 exe 都用)
   FILE_PREFIX: mcore
-  WIN_PREFIX: micore
+  WIN_PREFIX: mcore
   TITLE_PREFIX: mcore
 
 jobs:
@@ -75,7 +74,7 @@ jobs:
           fi
           echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
           if [ "$SKIP" = "true" ]; then
-            echo "已是 deb(mcore-*) + zip(micore-*) 两个资产且正文为空,跳过"
+            echo "已是 2 个 mcore-* 资产且正文为空,跳过"
           fi
 
       - name: 下载并改名
@@ -89,7 +88,7 @@ jobs:
             --pattern "mihomo-linux-amd64-v3-${TAG}.deb" \
             --pattern "mihomo-windows-amd64-v3-${TAG}.zip"
           cd dist
-          # deb 用 mcore-,windows zip 用 micore-
+          # deb 与 zip 都用 mcore- 前缀(两个前缀变量保留,值相同)
           for f in mihomo-*; do
             case "$f" in
               *.zip) mv -v "$f" "${WIN_PREFIX}-${f#mihomo-}" ;;
@@ -144,7 +143,7 @@ jobs:
           echo "✓ 重打包校验通过:$(cd "$VERIFY" && sha256sum *)"
           ls -lh "$OUT"
 
-      - name: 同步 Release(deb→mcore-,zip→micore-,正文留空)
+      - name: 同步 Release(标题与文件名改 mcore,正文留空)
         if: steps.chk.outputs.skip != 'true'
         run: |
           set -euo pipefail
