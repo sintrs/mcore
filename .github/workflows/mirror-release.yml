@@ -125,6 +125,17 @@ jobs:
 
           echo "=== 新 zip 内容 ==="
           unzip -l "$OUT"
+
+          # 自校验:把新 zip 解回来,和重打包前的工作目录逐文件比 sha256。
+          # 工作目录只是 mv 改名未动内容,所以相等即证明 exe 与上游字节一致。
+          VERIFY="$RUNNER_TEMP/rezip-verify"
+          rm -rf "$VERIFY" && mkdir -p "$VERIFY"
+          unzip -q "$OUT" -d "$VERIFY"
+          if ! diff <(cd "$WORK" && sha256sum * | sort) <(cd "$VERIFY" && sha256sum * | sort); then
+            echo "::error::重打包后内容与上游不一致"
+            exit 1
+          fi
+          echo "✓ 重打包校验通过:$(cd "$VERIFY" && sha256sum *)"
           ls -lh "$OUT"
 
       - name: 同步 Release(标题与文件名改 mcore,正文留空)
