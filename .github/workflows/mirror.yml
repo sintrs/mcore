@@ -1,4 +1,4 @@
-name: Mirror Upstream Release
+name: Sync Packages
 
 # 把既有 amd64-v3 的包取回来，只改文件名后在本地仓库重新发布：
 #   linux deb   →  mcore-linux-amd64-v3-<tag>.deb
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '指定上游 tag（留空则取最新，例如 v1.19.33）'
+        description: '指定版本 tag（留空则取最新，例如 v1.19.33）'
         type: string
         required: false
       force:
@@ -64,14 +64,14 @@ jobs:
             NEED=true;  WHY="$TAG 尚未转发"
           fi
 
-          echo "上游 tag: $TAG"
+          echo "版本 tag: $TAG"
           echo "决定: $WHY"
           {
             echo "### 转发检查"
             echo ""
             echo "| 项 | 值 |"
             echo "|---|---|"
-            echo "| 上游 tag | \`$TAG\` |"
+            echo "| 版本 tag | \`$TAG\` |"
             echo "| 本仓是否已有 | $([ "$EXISTS" = 1 ] && echo 是 || echo 否) |"
             echo "| 结论 | $WHY |"
           } >> "$GITHUB_STEP_SUMMARY"
