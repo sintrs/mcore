@@ -170,3 +170,11 @@ jobs:
 
           gh release view "$TAG" -R "$REPO" --json tagName,assets \
             --jq '"\(.tagName)", (.assets[] | "  \(.name)  \(.size)")'
+
+          # 补发旧版本时，GitHub 会把「最后创建的」当成 Latest，导致 Latest 指向旧版本。
+          # 这里把 Latest 强制指回版本号最大的那个 tag（sort -V 按版本排序，不是按字符串）。
+          MAX="$(gh release list -R "$REPO" --limit 200 --json tagName --jq '.[].tagName' | sort -V | tail -1)"
+          if [ -n "$MAX" ]; then
+            gh release edit "$MAX" -R "$REPO" --latest
+            echo "Latest -> $MAX"
+          fi
