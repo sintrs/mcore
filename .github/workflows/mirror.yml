@@ -1,0 +1,176 @@
+name: Mirror Upstream Release
+
+# 把上游 MetaCubeX/mihomo 的 amd64-v3 包原样转发到本仓库，只改文件名：
+#   mihomo-linux-amd64-v3-<tag>.deb    →  mcore-linux-amd64-v3-<tag>.deb
+#   mihomo-windows-amd64-v3-<tag>.zip  →  mcore-windows-amd64-v3-<tag>.zip
+#
+# 本仓库不编译任何东西，二进制与上游逐字节一致（release 正文附 SHA256 便于核对）。
+# 本仓库不是 fork，所以 schedule 能正常调度 —— fork 的定时任务默认被禁用。
+#
+# cron 避开整点：UTC 21:23 = 北京 05:23。上游发版不分时段，每天查一次足够。
+
+on:
+  schedule:
+    - cron: '23 21 * * *'      # UTC 21:23 = 北京次日 05:23
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '指定上游 tag（留空则取最新，例如 v1.19.33）'
+        type: string
+        required: false
+      force:
+        description: '该版本已存在也重新下载并覆盖资产'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: MetaCubeX/mihomo
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 确定要转发的版本
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IN_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${IN_TAG}" ]; then
+            TAG="${IN_TAG}"
+            case "$TAG" in v*) ;; *) TAG="v${TAG}" ;; esac
+          else
+            TAG="$(gh release view -R "$UPSTREAM" --json tagName --jq .tagName)"
+          fi
+
+          EXISTS=0
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && EXISTS=1
+
+          if [ "$EXISTS" = 1 ] && [ "${FORCE}" != "true" ]; then
+            NEED=false; WHY="本仓库已有 $TAG，跳过（force 可覆盖）"
+          elif [ "$EXISTS" = 1 ]; then
+            NEED=true;  WHY="已存在 $TAG，按 force 覆盖"
+          else
+            NEED=true;  WHY="$TAG 尚未转发"
+          fi
+
+          echo "上游 tag: $TAG"
+          echo "决定: $WHY"
+          {
+            echo "### 转发检查"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 上游 tag | \`$TAG\` |"
+            echo "| 本仓是否已有 | $([ "$EXISTS" = 1 ] && echo 是 || echo 否) |"
+            echo "| 结论 | $WHY |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "need=$NEED" >> "$GITHUB_OUTPUT"
+
+      - name: 下载并改名
+        if: steps.pick.outputs.need == 'true'
+        id: dl
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pkg"
+          mkdir -p "$D"
+
+          DEB="mihomo-linux-amd64-v3-${TAG}.deb"
+          ZIP="mihomo-windows-amd64-v3-${TAG}.zip"
+
+          for f in "$DEB" "$ZIP"; do
+            ok=0
+            for i in 1 2 3; do
+              if gh release download "$TAG" -R "$UPSTREAM" -p "$f" -D "$D" --clobber; then ok=1; break; fi
+              echo "下载 $f 失败，第 $i 次，2s 后重试"; sleep 2
+            done
+            [ "$ok" = 1 ] || { echo "::error::下载 $f 失败"; exit 1; }
+            [ -s "$D/$f" ] || { echo "::error::$f 为空"; exit 1; }
+            sz=$(stat -c%s "$D/$f")
+            [ "$sz" -gt 1000000 ] || { echo "::error::$f 只有 ${sz}B，不像完整包"; exit 1; }
+          done
+
+          mv -f "$D/$DEB" "$D/${DEB/mihomo-/mcore-}"
+          mv -f "$D/$ZIP" "$D/${ZIP/mihomo-/mcore-}"
+
+          ls -l "$D"
+          echo "dir=$D" >> "$GITHUB_OUTPUT"
+
+      - name: 生成说明
+        if: steps.pick.outputs.need == 'true'
+        id: notes
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          D: ${{ steps.dl.outputs.dir }}
+          UPSTREAM: MetaCubeX/mihomo
+        run: |
+          set -euo pipefail
+          N="$RUNNER_TEMP/notes.md"
+          DEB="mcore-linux-amd64-v3-${TAG}.deb"
+          ZIP="mcore-windows-amd64-v3-${TAG}.zip"
+
+          row() {
+            printf '| `%s` | %s MB | `%s` |\n' "$1" \
+              "$(awk -v b="$(stat -c%s "$D/$1")" 'BEGIN{printf "%.1f", b/1048576}')" \
+              "$(sha256sum "$D/$1" | cut -d' ' -f1)"
+          }
+
+          {
+            echo "上游 \`MetaCubeX/mihomo\` 的**原样转发**，只把文件名前缀 \`mihomo-\` 换成 \`mcore-\`。"
+            echo "本仓库不重新编译，二进制与上游逐字节一致，SHA256 可自行核对。"
+            echo ""
+            echo "| 文件 | 大小 | SHA256 |"
+            echo "|---|---|---|"
+            row "$DEB"
+            row "$ZIP"
+            echo ""
+            echo "- 来源：https://github.com/${UPSTREAM}/releases/tag/${TAG}"
+            echo "- 构建方：MetaCubeX（本仓库仅转发）"
+            echo ""
+            echo '```bash'
+            echo "sudo dpkg -i ${DEB}    # 安装后命令为 mihomo，配置默认在 /etc/mihomo"
+            echo '```'
+          } > "$N"
+
+          cat "$N"
+          echo "file=$N" >> "$GITHUB_OUTPUT"
+
+      - name: 发布
+        if: steps.pick.outputs.need == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.pick.outputs.tag }}
+          D: ${{ steps.dl.outputs.dir }}
+          NOTES: ${{ steps.notes.outputs.file }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=("$D"/mcore-*.deb "$D"/mcore-*.zip)
+          [ ${#FILES[@]} -ge 2 ] || { echo "::error::产物不足: ${#FILES[@]}"; exit 1; }
+
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" -R "$REPO" "${FILES[@]}" --clobber
+            gh release edit   "$TAG" -R "$REPO" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" -R "$REPO" \
+              --title "mcore ${TAG}" --notes-file "$NOTES" "${FILES[@]}"
+          fi
+
+          gh release view "$TAG" -R "$REPO" --json tagName,assets \
+            --jq '"\(.tagName)", (.assets[] | "  \(.name)  \(.size)")'

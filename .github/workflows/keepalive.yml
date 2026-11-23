@@ -1,0 +1,27 @@
+name: Keepalive
+
+# GitHub 对公开仓库有「60 天无提交活动就停用定时工作流」的规则。
+# 每月一次空提交，把这个仓库的定时任务保住。
+
+on:
+  schedule:
+    - cron: '17 3 1 * *'      # 每月 1 号 UTC 03:17 = 北京 11:17
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 写时间戳
+        run: |
+          set -euo pipefail
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .keepalive
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .keepalive
+          git commit -m "keepalive: $(cat .keepalive)" || { echo '无变化，跳过'; exit 0; }
+          git push
