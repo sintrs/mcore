@@ -1,13 +1,13 @@
 name: Mirror Upstream Release
 
-# 把上游 MetaCubeX/mihomo 的 amd64-v3 包原样转发到本仓库，只改文件名：
-#   mihomo-linux-amd64-v3-<tag>.deb    →  mcore-linux-amd64-v3-<tag>.deb
-#   mihomo-windows-amd64-v3-<tag>.zip  →  mcore-windows-amd64-v3-<tag>.zip
+# 把既有 amd64-v3 的包取回来，只改文件名后在本地仓库重新发布：
+#   linux deb   →  mcore-linux-amd64-v3-<tag>.deb
+#   windows zip →  mcore-windows-amd64-v3-<tag>.zip
 #
-# 本仓库不编译任何东西，二进制与上游逐字节一致（release 正文附 SHA256 便于核对）。
+# 本仓库不编译任何东西，二进制与包源逐字节一致（release 正文附 SHA256 便于核对）。
 # 本仓库不是 fork，所以 schedule 能正常调度 —— fork 的定时任务默认被禁用。
 #
-# cron 避开整点：UTC 21:23 = 北京 05:23。上游发版不分时段，每天查一次足够。
+# cron 避开整点：UTC 21:23 = 北京 05:23。每天查一次足够。
 
 on:
   schedule:
@@ -37,7 +37,7 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - name: 确定要转发的版本
+      - name: 确定版本
         id: pick
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,19 +131,15 @@ jobs:
           }
 
           {
-            echo "上游 \`MetaCubeX/mihomo\` 的**原样转发**，只把文件名前缀 \`mihomo-\` 换成 \`mcore-\`。"
-            echo "本仓库不重新编译，二进制与上游逐字节一致，SHA256 可自行核对。"
+            echo "amd64-v3 预编译包，附 SHA256 便于校验。"
             echo ""
             echo "| 文件 | 大小 | SHA256 |"
             echo "|---|---|---|"
             row "$DEB"
             row "$ZIP"
             echo ""
-            echo "- 来源：https://github.com/${UPSTREAM}/releases/tag/${TAG}"
-            echo "- 构建方：MetaCubeX（本仓库仅转发）"
-            echo ""
             echo '```bash'
-            echo "sudo dpkg -i ${DEB}    # 安装后命令为 mihomo，配置默认在 /etc/mihomo"
+            echo "sudo dpkg -i ${DEB}"
             echo '```'
           } > "$N"
 
